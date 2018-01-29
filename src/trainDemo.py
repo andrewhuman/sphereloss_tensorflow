@@ -2,24 +2,21 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from utils import faceUtil
-from datetime import datetime
-import os.path
-import time
-import sys
-import random
-import tensorflow as tf
-import numpy as np
-import importlib
 import argparse
-from models import inception_resnet as network
-from loss.sphere import *
+import os.path
+import sys
+import time
+from datetime import datetime
 
-import h5py
-import tensorflow.contrib.slim as slim
-from tensorflow.python.ops import data_flow_ops
+import numpy as np
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import data_flow_ops
+
+from loss.sphere import *
+from models import inception_resnet_v1 as network
+from utils import faceUtil
+
 
 def main(args):
     print("main start")
@@ -43,6 +40,14 @@ def main(args):
     model_dir = os.path.join(os.path.expanduser(args.models_base_dir), subdir)
     if not os.path.isdir(model_dir):  # Create the model directory if it doesn't exist
         os.makedirs(model_dir)
+
+    pretrained_model = None
+    if args.pretrained_model:
+        # pretrained_model = os.path.expanduser(args.pretrained_model)
+        # pretrained_model = tf.train.get_checkpoint_state(args.pretrained_model)
+        pretrained_model = args.pretrained_model
+        print('Pre-trained model: %s' % pretrained_model)
+
 
     # Write arguments to a text file
     faceUtil.write_arguments_to_file(args, os.path.join(log_dir, 'arguments.txt'))
@@ -93,7 +98,7 @@ def main(args):
                 image = tf.image.decode_image(file_contents,channels=3)
 
                 if args.random_rotate:
-                    image = tf.py_func(faceUtil.random_rotate_image,[image],tf.uint8)
+                    image = tf.py_func(faceUtil.random_rotate_image, [image], tf.uint8)
 
                 if args.random_crop:
                     image = tf.random_crop(image,[args.image_size,args.image_size,3])
@@ -145,11 +150,32 @@ def main(args):
         regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         total_loss = tf.add_n([sphere_loss] + regularization_losses,name='total_loss')
 
-        train_op = faceUtil.train(total_loss,global_step,args.optimizer,learning_rate,
-                          args.moving_average_decay, tf.global_variables(), args.log_histograms)
+        train_op = faceUtil.train(total_loss, global_step, args.optimizer, learning_rate,
+                                  args.moving_average_decay, tf.global_variables(), args.log_histograms)
+        # print("global_variables len = {}".format(len(tf.global_variables())))
+        # print("local_variables len = {}".format(len(tf.local_variables())))
+        # print("trainable_variables len = {}".format(len(tf.trainable_variables())))
+        # for v in tf.trainable_variables() :
+        #     print("trainable_variables :{}".format(v.name))
+        # train_op = faceUtil.train(sphere_loss,global_step,args.optimizer,learning_rate,
+        #                   args.moving_average_decay, tf.global_variables(), args.log_histograms)
 
         #创建saver
-        saver = tf.train.Saver(var_list=tf.trainable_variables(),max_to_keep=3)
+        variables = tf.trainable_variables()
+        variables_to_restore  = [v for v in variables if v.name.split('/')[0] != 'Logits']
+        print("variables_trainable len = ",len(variables))
+        print("variables_to_restore len = ",len(variables_to_restore))
+        # for v in variables_to_restore :
+        #     print("variables_to_restore : ",v.name)
+        saver = tf.train.Saver(var_list=variables_to_restore,max_to_keep=3)
+
+        # variables_trainable = tf.trainable_variables()
+        # print("variables_trainable len = ",len(variables_trainable))
+        # # for v in variables_trainable :
+        # #     print('variables_trainable : {}'.format(v.name))
+        # variables_to_restore = slim.get_variables_to_restore(include=['InceptionResnetV1'])
+        # print("variables_to_restore len = ",len(variables_to_restore))
+        # saver = tf.train.Saver(var_list=variables_to_restore,max_to_keep=3)
 
         # Build the summary operation based on the TF collection of Summaries.
         summary_op = tf.summary.merge_all()
@@ -170,8 +196,13 @@ def main(args):
         tf.train.start_queue_runners(coord=coord,sess=sess)
 
         with sess.as_default():
-            # Training and validation loop
             print('Running training')
+            if pretrained_model :
+                print('Restoring pretrained model_checkpoint_path: %s' % pretrained_model)
+                saver.restore(sess,pretrained_model)
+
+            # Training and validation loop
+            print('Running training really')
             epoch = 0
             # 将所有数据过一遍的次数
             while epoch < args.max_nrof_epochs:
@@ -291,6 +322,10 @@ def parse_arguments(argv):
     print("parser = argparse.ArgumentParser()")
     parser.add_argument('--data_dir',type=str,default='align/casia_maxpy_mtcnnpy_182')
     parser.add_argument('--gpu_memory_fraction',type=float,default=0.7)
+    parser.add_argument('--pretrained_model', type=str,
+        help='Load a pretrained model before training starts.')
+    # default='modeltrained/20170512/model-20170512-110547.ckpt-250000',
+
     parser.add_argument('--max_nrof_epochs', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--image_size',type=int,default=160)
@@ -309,13 +344,13 @@ def parse_arguments(argv):
         help='L2 weight regularization.', default=5e-5)
     parser.add_argument('--learning_rate', type=float,
         help='Initial learning rate. If set to a negative value a learning rate ' +
-        'schedule can be specified in the file "learning_rate_schedule.txt"', default=0.01)
+        'schedule can be specified in the file "learning_rate_schedule.txt"', default=0.005)
     parser.add_argument('--optimizer', type=str, choices=['ADAGRAD', 'ADADELTA', 'ADAM', 'RMSPROP', 'MOM'],
         help='The optimization algorithm to use', default='ADAM')
     parser.add_argument('--learning_rate_decay_epochs', type=int,
         help='Number of epochs between learning rate decay.', default=100)
     parser.add_argument('--learning_rate_decay_factor', type=float,
-        help='Learning rate decay factor.', default=1.0)
+        help='Learning rate decay factor.', default=0.95)
     parser.add_argument('--moving_average_decay', type=float,
         help='Exponential decay for tracking of training parameters.', default=0.9999)
     parser.add_argument('--seed', type=int,

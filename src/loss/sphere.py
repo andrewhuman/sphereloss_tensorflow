@@ -8,7 +8,7 @@ def sphereloss(inputs,label,classes,batch_size,fraction = 1, scope='Logits',reus
     """
     inputs_shape = inputs.get_shape().as_list()
     with tf.variable_scope(name_or_scope=scope):
-        weight = tf.Variable(initial_value=tf.random_normal((classes,inputs_shape[1])) * tf.sqrt(2 / inputs_shape[1]),dtype=tf.float32,name='weight') # shaep =classes, features,
+        weight = tf.Variable(initial_value=tf.random_normal((classes,inputs_shape[1])) * tf.sqrt(2 / inputs_shape[1]),dtype=tf.float32,name='weights') # shaep =classes, features,
         print("weight shape = ",weight.get_shape().as_list())
 
     weight_unit = tf.nn.l2_normalize(weight,dim=1)
@@ -29,7 +29,6 @@ def sphereloss(inputs,label,classes,batch_size,fraction = 1, scope='Logits',reus
     logits_inputs = tf.reduce_sum(tf.multiply(inputs,weight_unit_batch),axis=1) # shaep =batch,
 
     print("logits_inputs shape = ",logits_inputs.get_shape().as_list())
-
 
     cos_theta = tf.reduce_sum(tf.multiply(inputs_unit,weight_unit_batch),axis=1) # shaep =batch,
     print("cos_theta shape = ",cos_theta.get_shape().as_list())
