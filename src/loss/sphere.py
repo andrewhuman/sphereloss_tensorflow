@@ -57,3 +57,46 @@ def sphereloss(inputs,label,classes,batch_size,fraction = 1, scope='Logits',reus
     loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label,logits=logits_final))
 
     return logits_final,loss
+
+
+def soft_loss(inputs,label,classes,scope='Logits'):
+    """
+    inputs tensor shape=[batch,features_num]
+    labels tensor shape=[batch] each unit belong num_outputs
+
+    """
+    inputs_shape = inputs.get_shape().as_list()
+    with tf.variable_scope(name_or_scope=scope):
+        weight = tf.Variable(initial_value=tf.random_normal((classes,inputs_shape[1])) * tf.sqrt(2 / inputs_shape[1]),
+                             dtype=tf.float32,name='weights') # shaep =classes, features,
+        bias = tf.Variable(initial_value=tf.zeros(classes),dtype=tf.float32,name='bias')
+        print("weight shape = ",weight.get_shape().as_list())
+        print("bias shape = ", bias.get_shape().as_list())
+
+    weight = tf.Print(weight, [tf.shape(weight)], message='logits weights shape = ',summarize=4, first_n=1)
+    logits = tf.nn.bias_add(tf.matmul(inputs,tf.transpose(weight)),bias,name='logits')
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label,logits=logits,
+                                                                         name='cross_entropy_per_example'),
+                          name='cross_entropy')
+
+    return  logits,loss
+
+def soft_loss_nobias(inputs,label,classes,scope='Logits'):
+    """
+    inputs tensor shape=[batch,features_num]
+    labels tensor shape=[batch] each unit belong num_outputs
+
+    """
+    inputs_shape = inputs.get_shape().as_list()
+    with tf.variable_scope(name_or_scope=scope):
+        weight = tf.Variable(initial_value=tf.random_normal((classes,inputs_shape[1])) * tf.sqrt(2 / inputs_shape[1]),
+                             dtype=tf.float32,name='weights') # shaep =classes, features,
+        print("weight shape = ",weight.get_shape().as_list())
+
+    weight = tf.Print(weight, [tf.shape(weight)], message='logits weights shape = ',summarize=4, first_n=1)
+    logits =tf.matmul(inputs,tf.transpose(weight),name='logits')
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label,logits=logits,
+                                                                         name='cross_entropy_per_example'),
+                          name='cross_entropy')
+
+    return  logits,loss

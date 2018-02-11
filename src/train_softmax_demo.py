@@ -12,6 +12,7 @@ import numpy as np
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import data_flow_ops
+import tensorflow.contrib.slim as slim
 
 from loss.sphere import *
 from models import inception_resnet_v1 as network
@@ -35,12 +36,14 @@ def main(args):
     log_dir = os.path.join(os.path.expanduser(args.logs_base_dir),subdir)
     if not os.path.isdir(log_dir):
         os.makedirs(log_dir)
+    print("log_dir =",log_dir)
 
     # model_dir =c:\User/models/facenet/2017;;;
     model_dir = os.path.join(os.path.expanduser(args.models_base_dir), subdir)
     if not os.path.isdir(model_dir):  # Create the model directory if it doesn't exist
         os.makedirs(model_dir)
 
+    print("model_dir =", model_dir)
     pretrained_model = None
     if args.pretrained_model:
         # pretrained_model = os.path.expanduser(args.pretrained_model)
@@ -62,8 +65,10 @@ def main(args):
         print("len(image_list) = ",len(image_list))
 
         # Create a queue that produces indices into the image_list and label_list
-        labels = ops.convert_to_tensor(label_list,dtype=tf.int32)
+        labels = ops.convert_to_tensor(label_list,dtype=tf.int64)
         range_size = array_ops.shape(labels)[0]
+        range_size = tf.Print(range_size, [tf.shape(range_size)],message='Shape of range_input_producer range_size : ',summarize=4, first_n=1)
+
         #产生一个队列，队列包含0到range_size-1的元素,打乱
         index_queue = tf.train.range_input_producer(range_size,num_epochs=None,shuffle=True,seed=None,capacity=32)
 
@@ -72,19 +77,19 @@ def main(args):
 
         #学习率
         learning_rate_placeholder = tf.placeholder(tf.float32,name='learning_rate')
-        #批大小
+        #批大小 arg.batch_size
         batch_size_placeholder = tf.placeholder(tf.int32,name='batch_size')
         #是否训练中
         phase_train_placeholder = tf.placeholder(tf.bool,name='phase_train')
-        #图像路径
+        #图像路径 大小 arg.batch_size * arg.epoch_size
         image_paths_placeholder = tf.placeholder(tf.string,shape=[None,1],name='image_paths')
-        #图像标签
+        #图像标签 大小：arg.batch_size * arg.epoch_size
         labels_placeholder = tf.placeholder(tf.int64,shape=[None,1],name='labels')
 
         #新建一个队列,数据流操作,fifo,先入先出
         input_queue = data_flow_ops.FIFOQueue(capacity=100000,dtypes=[tf.string,tf.int64],shapes=[(1,),(1,)],shared_name=None,name=None)
 
-        # enqueue_many返回的是一个操作
+        # enqueue_many返回的是一个操作 ,入站的数量是 len（image_paths_placeholder) = 从index_queue中取出 args.batch_size*args.epoch_size个元素
         enqueue_op = input_queue.enqueue_many([image_paths_placeholder,labels_placeholder],name='enqueue_op')
 
         nrof_preprocess_threads = 4
@@ -92,6 +97,11 @@ def main(args):
 
         for _ in range(nrof_preprocess_threads):
             filenames , label = input_queue.dequeue()
+            # label = tf.Print(label,[tf.shape(label)],message='Shape of one thread  input_queue.dequeue label : ',
+            #                  summarize=4,first_n=1)
+            # filenames = tf.Print(filenames, [tf.shape(filenames)], message='Shape of one thread  input_queue.dequeue filenames : ',
+            #                  summarize=4, first_n=1)
+            print("one thread  input_queue.dequeue len = ",tf.shape(label))
             images =[]
             for filenames in tf.unstack(filenames):
                 file_contents = tf.read_file(filenames)
@@ -115,11 +125,16 @@ def main(args):
             #从队列中取出名字 解析为image 然后加进images_and_labels 可能长度 =  4 *
             images_and_labels.append([images,label])
 
+        #最终一次进入网络的数据: 长应该度 = batch_size_placeholder
         image_batch, label_batch = tf.train.batch_join(images_and_labels,batch_size=batch_size_placeholder,
                                                        shapes=[(args.image_size,args.image_size,3),()],
                                                        enqueue_many = True,
                                                        capacity = 4 * nrof_preprocess_threads *  args.batch_size,
                                                        allow_smaller_final_batch=True)
+        print('final input net  image_batch len = ',tf.shape(image_batch))
+
+        image_batch = tf.Print(image_batch, [tf.shape(image_batch)], message='final input net  image_batch shape = ',
+                         summarize=4, first_n=1)
         image_batch = tf.identity(image_batch, 'image_batch')
         image_batch = tf.identity(image_batch, 'input')
         label_batch = tf.identity(label_batch, 'label_batch')
@@ -135,20 +150,32 @@ def main(args):
                                                    decay_steps=args.learning_rate_decay_epochs * args.epoch_size,
                                                    decay_rate=args.learning_rate_decay_factor,
                                                    staircase = True)
-
+        #decay_steps=args.learning_rate_decay_epochs * args.epoch_size,
 
         tf.summary.scalar('learning_rate', learning_rate)
 
         # Build the inference graph
         prelogits, _ = network.inference(image_batch,args.keep_probability,phase_train=phase_train_placeholder,
                                          bottleneck_layer_size=args.embedding_size,weight_decay=args.weight_decay)
+
+        prelogits = tf.Print(prelogits, [tf.shape(prelogits)], message='prelogits shape = ',
+                               summarize=4, first_n=1)
         print("prelogits.shape = ",prelogits.get_shape().as_list())
 
-        logits,sphere_loss = sphereloss(prelogits,label_batch,len(train_set),batch_size=args.batch_size)
+        # logits =slim.fully_connected(prelogits, len(train_set), activation_fn=None,
+        #                               weights_initializer=tf.contrib.layers.xavier_initializer(),
+        #                               weights_regularizer=slim.l2_regularizer(args.weight_decay),
+        #                               scope='Logits', reuse=False)
+        #
+        # # Calculate the average cross entropy loss across the batch
+        # cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        #     labels=label_batch, logits=logits, name='cross_entropy_per_example')
+        # tf.reduce_mean(cross_entropy, name='cross_entropy')
+        _,cross_entropy_mean = soft_loss_nobias(prelogits,label_batch,len(train_set))
+        tf.add_to_collection('losses', cross_entropy_mean)
 
-        tf.add_to_collection('losses',sphere_loss)
         regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        total_loss = tf.add_n([sphere_loss] + regularization_losses,name='total_loss')
+        total_loss = tf.add_n([cross_entropy_mean] + regularization_losses,name='total_loss')
 
         train_op = faceUtil.train(total_loss, global_step, args.optimizer, learning_rate,
                                   args.moving_average_decay, tf.global_variables(), args.log_histograms)
@@ -162,12 +189,18 @@ def main(args):
 
         #创建saver
         variables = tf.trainable_variables()
-        variables_to_restore  = [v for v in variables if v.name.split('/')[0] != 'Logits']
-        print("variables_trainable len = ",len(variables))
-        print("variables_to_restore len = ",len(variables_to_restore))
-        # for v in variables_to_restore :
-        #     print("variables_to_restore : ",v.name)
-        saver = tf.train.Saver(var_list=variables_to_restore,max_to_keep=3)
+        print("variables_trainable len = ", len(variables))
+        for v in variables:
+             print('variables_trainable : {}'.format(v.name))
+        saver = tf.train.Saver(var_list=variables, max_to_keep=2)
+
+        # variables_to_restore  = [v for v in variables if v.name.split('/')[0] != 'Logits']
+        # print("variables_trainable len = ",len(variables))
+        # print("variables_to_restore len = ",len(variables_to_restore))
+        # # for v in variables_to_restore :
+        # #     print("variables_to_restore : ",v.name)
+        # saver = tf.train.Saver(var_list=variables_to_restore,max_to_keep=3)
+
 
         # variables_trainable = tf.trainable_variables()
         # print("variables_trainable len = ",len(variables_trainable))
@@ -176,6 +209,8 @@ def main(args):
         # variables_to_restore = slim.get_variables_to_restore(include=['InceptionResnetV1'])
         # print("variables_to_restore len = ",len(variables_to_restore))
         # saver = tf.train.Saver(var_list=variables_to_restore,max_to_keep=3)
+
+
 
         # Build the summary operation based on the TF collection of Summaries.
         summary_op = tf.summary.merge_all()
@@ -258,8 +293,8 @@ def train(args, sess, epoch, image_list, label_list, index_dequeue_op, enqueue_o
                 err, _, step, reg_loss = sess.run([loss, train_op, global_step, regularization_losses], feed_dict=feed_dict)
 
             duration = time.time() - start_time
-            print('Epoch: [%d][%d/%d]\tTime %.3f\tLoss %2.3f\tRegLoss %2.3f' %
-              (epoch, batch_number+1, args.epoch_size, duration, err, np.sum(reg_loss)))
+            print('global_step[%d],Epoch: [%d][%d/%d]\tTime %.3f\tLoss %2.3f\tRegLoss %2.3f' %
+              (step,epoch, batch_number+1, args.epoch_size, duration, err, np.sum(reg_loss)))
             batch_number += 1
             train_time += duration
 
@@ -321,13 +356,15 @@ def parse_arguments(argv):
     parser = argparse.ArgumentParser()
     print("parser = argparse.ArgumentParser()")
     parser.add_argument('--data_dir',type=str,default='align/casia_maxpy_mtcnnpy_182')
-    parser.add_argument('--gpu_memory_fraction',type=float,default=0.7)
-    parser.add_argument('--pretrained_model', type=str,
+    parser.add_argument('--gpu_memory_fraction',type=float,default=0.8)
+    parser.add_argument('--pretrained_model', type=str,default = '/home/huyu/models/facenet/20180209-115727/model-20180209-115727.ckpt-14400',
         help='Load a pretrained model before training starts.')
+    default = '/home/huyu/models/facenet/20180209-114624/model-20180209-114624.ckpt-0',
+    #default='/home/huyu/models/facenet/20180208-210946/model-20180208-210946.ckpt-1200',
     # default='modeltrained/20170512/model-20170512-110547.ckpt-250000',
 
-    parser.add_argument('--max_nrof_epochs', type=int, default=80)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--max_nrof_epochs', type=int, default=200)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--image_size',type=int,default=160)
     parser.add_argument('--epoch_size', type=int, default=300)
     parser.add_argument('--embedding_size', type=int, default=128)
@@ -339,18 +376,18 @@ def parse_arguments(argv):
     parser.add_argument('--random_rotate',
         help='Performs random rotations of training images.', action='store_true')
     parser.add_argument('--keep_probability', type=float,
-        help='Keep probability of dropout for the fully connected layer(s).', default=0.8)
+        help='Keep probability of dropout for the fully connected layer(s).', default=1)
     parser.add_argument('--weight_decay', type=float,
-        help='L2 weight regularization.', default=5e-5)
+        help='L2 weight regularization.', default=0.0)
     parser.add_argument('--learning_rate', type=float,
         help='Initial learning rate. If set to a negative value a learning rate ' +
         'schedule can be specified in the file "learning_rate_schedule.txt"', default=0.005)
     parser.add_argument('--optimizer', type=str, choices=['ADAGRAD', 'ADADELTA', 'ADAM', 'RMSPROP', 'MOM'],
         help='The optimization algorithm to use', default='ADAM')
     parser.add_argument('--learning_rate_decay_epochs', type=int,
-        help='Number of epochs between learning rate decay.', default=100)
+        help='Number of epochs between learning rate decay.', default=5)
     parser.add_argument('--learning_rate_decay_factor', type=float,
-        help='Learning rate decay factor.', default=0.95)
+        help='Learning rate decay factor.', default=0.8)
     parser.add_argument('--moving_average_decay', type=float,
         help='Exponential decay for tracking of training parameters.', default=0.9999)
     parser.add_argument('--seed', type=int,
